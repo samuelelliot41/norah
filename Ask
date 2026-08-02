@@ -1,0 +1,159 @@
+/**
+ * POST /api/ask
+ * Body: { "question": "How much does Norah cost?" }
+ * Returns: { "answer": "...", "related": ["...", "...", "..."] }
+ *
+ * This is the ONLY place the Anthropic API key exists. The widget in
+ * Framer never sees it — it only ever talks to this endpoint.
+ *
+ * Deploy: drop this whole folder into a GitHub repo, import it in
+ * Vercel, add the ANTHROPIC_API_KEY environment variable in the
+ * Vercel project settings, deploy. Vercel auto-detects /api/*.js
+ * files as serverless functions — no extra config needed.
+ */
+
+// ─── Norah's knowledge base ────────────────────────────────────────────
+// This is the single source of truth for what the assistant is allowed
+// to say. Keep it in sync with the real product — pricing, setup steps,
+// integrations — since the model is instructed to answer ONLY from this.
+const KNOWLEDGE = `
+NORAH — AI receptionist for trades (plumbers, HVAC, electricians, roofers, cleaners).
+
+WHAT SHE DOES
+- Answers every call, 24/7, first ring. Never goes to voicemail.
+- Quotes jobs using ONLY the business's own price list (never invents a price).
+- Books the visit straight into the owner's calendar while the caller is still on the phone.
+- Texts a confirmation to the customer within seconds of hanging up.
+- Logs every call: name, number, address, job, full transcript.
+- Knows when a call is too weird to handle — transfers to a real human or takes a detailed message instead of guessing.
+
+PRICING
+- Solo plan: $99/month. For one location, one busy pair of hands. Includes: every call answered, calendar booking, written call log, real quotes from your price list, instant text confirmations, your own greeting/prices/rules.
+- Enterprise plan: custom pricing ("let's talk numbers"). For shops with more than one location. Includes everything in Solo, plus: trained on your specific operation, priority human support, unlimited lines and locations, full onboarding done for you, volume pricing that improves as you grow.
+- 14-day trial on every plan, no card required, cancel in two clicks. (Confirm this is still accurate before deploying — pricing terms change.)
+
+SETUP
+- Forward your existing phone number to Norah — your phone carrier gives you a short code for this, no new number needed, no porting required.
+- Tell her your services, prices, service area, and hours (roughly ten minutes).
+- If you get stuck, a real person is reachable by phone to walk you through it.
+- You can run "ring-first" mode: your phone rings first, and only rolls over to Norah if you don't answer. Or let her take every call. Switchable anytime.
+
+INTEGRATIONS
+- Native: Google Calendar, Outlook/Microsoft 365, Jobber, ServiceTitan, Housecall Pro, QuickBooks, Stripe, SMS.
+- Anything else: covered via Zapier.
+
+FAQ
+Q: What if she gets something wrong?
+A: If a call's beyond her, she doesn't guess — she takes a proper message or puts the caller through to a human, and it's all logged so you can see exactly what was said. She only ever quotes from the price list you gave her, so a made-up price can't happen.
+
+Q: Won't customers hate talking to a robot?
+A: Most people don't mind — what they actually hate is calling three plumbers and getting three voicemails. She talks like a person, doesn't pretend to be one if asked directly, and gets most callers booked in about a minute.
+
+Q: Can I still answer my own phone?
+A: Yes. It's your line. Ring-first mode rings you first and only falls to Norah if you miss it, or she can take every call — switch anytime.
+
+Q: How hard is setup, I'm not a computer guy?
+A: If you can send a text, you can do this. Forward your number, tell her your services/prices/hours, done in about ten minutes. If you get stuck, call and a real person walks you through it.
+
+Q: How do I know what she's saying on my calls?
+A: Every call is recorded and logged — read or listen back whenever. Most people check every call in week one and barely look by week three.
+
+WHAT SHE IS NOT
+- Not a chatbot on a website — she answers real phone calls.
+- Not a call center with humans — fully AI-driven, with human transfer as a fallback.
+- Does not replace the tradesperson doing the actual job — she only handles the phone.
+`.trim();
+
+const SYSTEM = `You are the Norah website assistant — a small help widget embedded on Norah's own landing page. Norah is an AI receptionist product for tradespeople (plumbers, electricians, HVAC, roofers, cleaners).
+
+Answer ONLY using the KNOWLEDGE below. If something isn't covered, say plainly that you don't have that detail and suggest they book a call or email hello@norah.ai — never invent pricing, features, or policies that aren't in the knowledge base.
+
+Voice: short sentences, plain words, contractions, no corporate phrasing, no sales pitch tone, no emoji, no markdown headers. Sound like a helpful person, not a brochure. Keep answers under 80 words unless the question genuinely needs more.
+
+Respond with ONLY a JSON object, no other text, no markdown fences:
+{"answer": "your answer here", "related": ["follow-up question 1", "follow-up question 2", "follow-up question 3"]}
+
+The three related questions should be short, natural things a visitor might ask next, grounded in the KNOWLEDGE.
+
+KNOWLEDGE:
+${KNOWLEDGE}`;
+
+module.exports = async function handler(req, res) {
+  // CORS — restrict this to your real domain before going live.
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.status(200).end();
+
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Use POST' });
+  }
+
+  const question = (req.body && req.body.question || '').toString().trim().slice(0, 500);
+  if (!question) {
+    return res.status(400).json({ error: 'Missing "question" in request body' });
+  }
+
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    console.error('ANTHROPIC_API_KEY is not set');
+    return res.status(500).json({
+      answer: "The assistant isn't configured yet — email hello@norah.ai and a person will help.",
+      related: [],
+    });
+  }
+
+  try {
+    const upstream = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-5',
+        max_tokens: 400,
+        system: SYSTEM,
+        messages: [{ role: 'user', content: question }],
+      }),
+    });
+
+    if (!upstream.ok) {
+      const errText = await upstream.text();
+      console.error('Anthropic API error:', upstream.status, errText);
+      return res.status(502).json({
+        answer: "Something went wrong on my end — try again, or email hello@norah.ai.",
+        related: [],
+      });
+    }
+
+    const data = await upstream.json();
+    const raw = (data.content || []).map((b) => b.text || '').join('').trim();
+
+    let parsed;
+    try {
+      // Model is instructed to return raw JSON, but strip fences defensively
+      // in case it wraps the response anyway.
+      const cleaned = raw.replace(/^```json\s*|```$/g, '').trim();
+      parsed = JSON.parse(cleaned);
+    } catch (e) {
+      console.error('Failed to parse model response as JSON:', raw);
+      return res.status(200).json({
+        answer: raw || "I couldn't put that into words properly — try rephrasing?",
+        related: [],
+      });
+    }
+
+    return res.status(200).json({
+      answer: String(parsed.answer || '').slice(0, 2000),
+      related: Array.isArray(parsed.related) ? parsed.related.slice(0, 3).map(String) : [],
+    });
+  } catch (err) {
+    console.error('Handler error:', err);
+    return res.status(500).json({
+      answer: "Something went wrong on my end — try again, or email hello@norah.ai.",
+      related: [],
+    });
+  }
+};
