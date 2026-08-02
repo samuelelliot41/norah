@@ -1,0 +1,9 @@
+{
+  "name": "norah-assistant-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Backend endpoint for the Norah landing page assistant widget. Deploy to Vercel.",
+  "engines": {
+    "node": ">=18"
+  }
+}
